@@ -29,6 +29,16 @@ pub struct SetFeedbackLayoutPayload {
 	layout: String,
 }
 
+fn resolve_image_path(path: String) -> String {
+	// setImage accepts explicit filenames, unlike manifest icons. Keep supporting
+	// extensionless paths for plugins using OpenDeck's existing icon resolution.
+	if std::path::Path::new(&path).extension().is_some() {
+		path
+	} else {
+		crate::shared::convert_icon(path)
+	}
+}
+
 pub async fn set_title(event: ContextAndPayloadEvent<SetTitlePayload>) -> Result<(), anyhow::Error> {
 	let mut locks = acquire_locks_mut().await;
 
@@ -72,7 +82,7 @@ pub async fn set_image(mut event: ContextAndPayloadEvent<SetImagePayload>) -> Re
 			if image.trim().is_empty() {
 				event.payload.image = None;
 			} else if !image.trim().starts_with("data:") {
-				event.payload.image = Some(crate::shared::convert_icon(
+				event.payload.image = Some(resolve_image_path(
 					crate::shared::config_dir()
 						.join("plugins")
 						.join(&instance.action.plugin)
@@ -144,4 +154,43 @@ pub async fn set_state(event: ContextAndPayloadEvent<SetStatePayload>) -> Result
 	mark_profile_stale(&event.context.device, &mut locks).await?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::resolve_image_path;
+
+	#[test]
+	fn explicit_image_extensions_are_preserved() {
+		for path in [
+			"imgs/actions/90+.png",
+			"imgs/actions/icon@2x.png",
+			"imgs/actions/icon.svg",
+			"imgs/actions/icon.jpg",
+			"imgs/actions/icon.webp",
+		] {
+			assert_eq!(resolve_image_path(path.to_owned()), path);
+		}
+	}
+
+	#[test]
+	fn extensionless_images_keep_icon_resolution() {
+		let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+		let directory = std::env::temp_dir().join(format!("opendeck-image-{}-{unique}", std::process::id()));
+		std::fs::create_dir(&directory).unwrap();
+		let path = directory.join("90+").to_str().unwrap().to_owned();
+		std::fs::write(format!("{path}.png"), []).unwrap();
+		let png = resolve_image_path(path.clone());
+		std::fs::write(format!("{path}@2x.png"), []).unwrap();
+		let high_resolution = resolve_image_path(path.clone());
+		std::fs::write(format!("{path}.svg"), []).unwrap();
+		let svg = resolve_image_path(path.clone());
+		let explicit_png = resolve_image_path(format!("{path}.png"));
+		std::fs::remove_dir_all(directory).unwrap();
+
+		assert_eq!(png, format!("{path}.png"));
+		assert_eq!(high_resolution, format!("{path}@2x.png"));
+		assert_eq!(svg, format!("{path}.svg"));
+		assert_eq!(explicit_png, format!("{path}.png"));
+	}
 }
